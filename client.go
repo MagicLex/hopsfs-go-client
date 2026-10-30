@@ -287,13 +287,18 @@ func newClientInt(options ClientOptions, nnAddresses []string, leaderAddress str
 		return nil, err
 	}
 
-	var leaderConn *rpc.NamenodeConnection
-	leaderNNConnectionOptions := nnConnectionOptions
-	leaderNNConnectionOptions.Addresses = []string{leaderAddress}
-	leaderConn, err = rpc.NewNamenodeConnection(leaderNNConnectionOptions)
-	if err != nil {
-		_ = namenodeConn.Close()
-		return nil, err
+	// A second dial to the same namenode while the first connection is idle
+	// after its handshake waits on the namenode: about 1 s, or past the
+	// connect deadline with TLS. One connection serves both roles then.
+	leaderConn := namenodeConn
+	if len(nnAddresses) != 1 || nnAddresses[0] != leaderAddress {
+		leaderNNConnectionOptions := nnConnectionOptions
+		leaderNNConnectionOptions.Addresses = []string{leaderAddress}
+		leaderConn, err = rpc.NewNamenodeConnection(leaderNNConnectionOptions)
+		if err != nil {
+			_ = namenodeConn.Close()
+			return nil, err
+		}
 	}
 
 	// We need cookies to access KMS (required for HDFS encrypted zone).
@@ -497,5 +502,8 @@ func (c *Client) executeWithLeaderFallback(method string, req proto.Message, res
 
 // Close terminates all underlying socket connections to remote server.
 func (c *Client) Close() error {
+	if c.leaderNamenode == c.namenode {
+		return c.namenode.Close()
+	}
 	return errors.Join(c.namenode.Close(), c.leaderNamenode.Close())
 }
